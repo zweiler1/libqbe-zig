@@ -1,3 +1,5 @@
+//! This file only contains things needed to interact with the 'shim.c' file and thus interact with the QBE-internal pipeline
+
 const std = @import("std");
 
 extern fn qbe_set_target(name: [*c]const u8) c_int;

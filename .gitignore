@@ -3,5 +3,6 @@ zig-out/
 zig-pkg/
 *.o
 
+output.ssa
 output.s
 main

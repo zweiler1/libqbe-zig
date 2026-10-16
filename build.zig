@@ -44,7 +44,7 @@ pub fn build(b: *std.Build) !void {
             .target = target,
             .optimize = optimize,
             .imports = &.{
-                .{ .name = "qbe", .module = lib.root_module },
+                .{ .name = "lib", .module = lib.root_module },
             },
         }),
         .use_lld = true,
