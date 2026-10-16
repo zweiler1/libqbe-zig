@@ -9,9 +9,6 @@
 //! For licensing information, look at the LICENSE-qbe-zig file
 
 const std = @import("std");
-const print = std.debug.print;
-const ArrayList = std.array_list.Managed;
-const Allocator = std.mem.Allocator;
 
 pub const Argument = struct {
     ty: Type,
@@ -555,33 +552,33 @@ pub const Block = struct {
     /// Label before the block
     label: []const u8,
     /// A list of statements in the block
-    items: ArrayList(BlockItem),
+    items: std.ArrayList(BlockItem),
 
     /// Initialize a new block with a label and allocator
-    pub fn init(label: []const u8, allocator: Allocator) Block {
+    pub fn init(label: []const u8) Block {
         return .{
             .label = label,
-            .items = ArrayList(BlockItem).init(allocator),
+            .items = .empty,
         };
     }
 
-    pub fn deinit(self: *Block) void {
-        self.items.deinit();
+    pub fn deinit(self: *Block, allocator: std.mem.Allocator) void {
+        self.items.deinit(allocator);
     }
 
     /// Adds a comment to the block
-    pub fn addComment(self: *Block, contents: []const u8) !void {
-        try self.items.append(.{ .comment = contents });
+    pub fn addComment(self: *Block, allocator: std.mem.Allocator, contents: []const u8) !void {
+        try self.items.append(allocator, .{ .comment = contents });
     }
 
     /// Adds a new instruction to the block
-    pub fn addInstr(self: *Block, instr: Instr) !void {
-        try self.items.append(.{ .statement = .{ .@"volatile" = instr } });
+    pub fn addInstr(self: *Block, allocator: std.mem.Allocator, instr: Instr) !void {
+        try self.items.append(allocator, .{ .statement = .{ .@"volatile" = instr } });
     }
 
     /// Adds a new instruction assigned to a temporary
-    pub fn assignInstr(self: *Block, temp: Value, ty: Type, instr: Instr) !void {
-        try self.items.append(.{ .statement = .{ .assign = .{
+    pub fn assignInstr(self: *Block, allocator: std.mem.Allocator, temp: Value, ty: Type, instr: Instr) !void {
+        try self.items.append(allocator, .{ .statement = .{ .assign = .{
             .temp = temp,
             .ty = ty.intoBase(),
             .instr = instr,
@@ -641,9 +638,9 @@ pub const Function = struct {
     /// Return type
     return_ty: ?Type,
     /// labeled blocks
-    blocks: ArrayList(Block),
+    blocks: std.ArrayList(Block),
 
-    allocator: Allocator,
+    allocator: std.mem.Allocator,
 
     /// Initialize an empty function and returns it
     pub fn init(
@@ -651,28 +648,28 @@ pub const Function = struct {
         name: []const u8,
         arguments: []const Argument,
         return_ty: ?Type,
-        allocator: Allocator,
+        allocator: std.mem.Allocator,
     ) Function {
         return .{
             .linkage = linkage,
             .name = name,
             .arguments = arguments,
             .return_ty = return_ty,
-            .blocks = ArrayList(Block).init(allocator),
+            .blocks = .empty,
             .allocator = allocator,
         };
     }
 
     pub fn deinit(self: *Function) void {
         for (self.blocks.items) |*block| {
-            block.deinit();
+            block.deinit(self.allocator);
         }
-        self.blocks.deinit();
+        self.blocks.deinit(self.allocator);
     }
 
     /// Adds a new empty block with a specified label and returns a reference to it
     pub fn addBlock(self: *Function, label: []const u8) !*Block {
-        try self.blocks.append(Block.init(label, self.allocator));
+        try self.blocks.append(self.allocator, Block.init(label));
         return &self.blocks.items[self.blocks.items.len - 1];
     }
 
@@ -687,7 +684,7 @@ pub const Function = struct {
         if (self.blocks.items.len == 0) {
             @panic("Last block must be present");
         }
-        try self.blocks.items[self.blocks.items.len - 1].addInstr(instr);
+        try self.blocks.items[self.blocks.items.len - 1].addInstr(self.allocator, instr);
     }
 
     /// Adds a new instruction assigned to a temporary
@@ -695,7 +692,7 @@ pub const Function = struct {
         if (self.blocks.items.len == 0) {
             @panic("Last block must be present");
         }
-        try self.blocks.items[self.blocks.items.len - 1].assignInstr(temp, ty, instr);
+        try self.blocks.items[self.blocks.items.len - 1].assignInstr(self.allocator, temp, ty, instr);
     }
 
     pub fn format(
@@ -707,19 +704,19 @@ pub const Function = struct {
             try writer.print(" {f}", .{ty});
         }
 
-        var args = ArrayList([]const u8).init(self.allocator);
+        var args: std.ArrayList([]const u8) = .empty;
         defer {
             for (args.items) |arg| {
                 self.allocator.free(arg);
             }
-            args.deinit();
+            args.deinit(self.allocator);
         }
 
         for (self.arguments) |arg| {
             const arg_string = std.fmt.allocPrint(self.allocator, "{f} {f}", .{ arg.ty, arg.val }) catch {
                 return std.Io.Writer.Error.WriteFailed;
             };
-            args.append(arg_string) catch {
+            args.append(self.allocator, arg_string) catch {
                 return std.Io.Writer.Error.WriteFailed;
             };
         }
@@ -806,45 +803,43 @@ pub const Linkage = struct {
 
 /// A complete QBE IL module
 pub const Module = struct {
-    functions: ArrayList(Function),
-    types: ArrayList(TypeDef),
-    data: ArrayList(DataDef),
+    functions: std.ArrayList(Function),
+    types: std.ArrayList(TypeDef),
+    data: std.ArrayList(DataDef),
 
     /// Creates a new module
-    pub fn init(allocator: Allocator) Module {
-        return Module{
-            .functions = ArrayList(Function).init(allocator),
-            .types = ArrayList(TypeDef).init(allocator),
-            .data = ArrayList(DataDef).init(allocator),
-        };
-    }
+    pub const empty: Module = .{
+        .functions = .empty,
+        .types = .empty,
+        .data = .empty,
+    };
 
-    pub fn deinit(self: *Module) void {
+    pub fn deinit(self: *Module, allocator: std.mem.Allocator) void {
         for (self.functions.items) |*func| {
             func.deinit();
         }
-        self.functions.deinit();
-        self.types.deinit();
-        self.data.deinit();
+        self.functions.deinit(allocator);
+        self.types.deinit(allocator);
+        self.data.deinit(allocator);
     }
 
     /// Adds a function to the module, returning a reference to it for later
     /// modification
-    pub fn addFunction(self: *Module, func: Function) !*Function {
-        try self.functions.append(func);
+    pub fn addFunction(self: *Module, allocator: std.mem.Allocator, func: Function) !*Function {
+        try self.functions.append(allocator, func);
         return &self.functions.items[self.functions.items.len - 1];
     }
 
     /// Adds a type definition to the module, returning a reference to it for
     /// later modification
-    pub fn addType(self: *Module, def: TypeDef) !*TypeDef {
-        try self.types.append(def);
+    pub fn addType(self: *Module, allocator: std.mem.Allocator, def: TypeDef) !*TypeDef {
+        try self.types.append(allocator, def);
         return &self.types.items[self.types.items.len - 1];
     }
 
     /// Adds a data definition to the module
-    pub fn addData(self: *Module, data: DataDef) !*DataDef {
-        try self.data.append(data);
+    pub fn addData(self: *Module, allocator: std.mem.Allocator, data: DataDef) !*DataDef {
+        try self.data.append(allocator, data);
         return &self.data.items[self.data.items.len - 1];
     }
 
@@ -866,12 +861,12 @@ pub const Module = struct {
     }
 };
 
-const testing = std.testing;
+// --- TESTING FILES ---
 
 fn testFmtEquals(T: type, value: T, expected: []const u8) !void {
-    const string = try std.fmt.allocPrint(testing.allocator, "{f}", .{value});
-    defer testing.allocator.free(string);
-    try testing.expectEqualSlices(u8, expected, string);
+    const string = try std.fmt.allocPrint(std.testing.allocator, "{f}", .{value});
+    defer std.testing.allocator.free(string);
+    try std.testing.expectEqualSlices(u8, expected, string);
 }
 
 test "qbe value" {
@@ -881,12 +876,12 @@ test "qbe value" {
 }
 
 test "block" {
-    var blk1 = Block.init("start", testing.allocator);
+    var blk1 = Block.init("start", std.testing.allocator);
     defer blk1.deinit();
     try blk1.addInstr(.{ .ret = null });
     try testFmtEquals(Block, blk1, "@start\n\tret\n");
 
-    var blk2 = Block.init("start", testing.allocator);
+    var blk2 = Block.init("start", std.testing.allocator);
     defer blk2.deinit();
     try blk2.addComment("Comment");
     try blk2.assignInstr(.{ .temporary = "foo" }, .word, .{ .add = .{ .lhs = .{ .@"const" = 2 }, .rhs = .{ .@"const" = 2 } } });
@@ -895,14 +890,14 @@ test "block" {
 }
 
 test "instr blit" {
-    var blk = Block.init("start", testing.allocator);
+    var blk = Block.init("start", std.testing.allocator);
     defer blk.deinit();
     try blk.addInstr(.{ .blit = .{ .src = .{ .temporary = "src" }, .dest = .{ .temporary = "dest" }, .n = 4 } });
     try testFmtEquals(Block, blk, "@start\n\tblit %src, %dest, 4\n");
 }
 
 test "function" {
-    var func = Function.init(Linkage.public(), "main", &.{}, null, testing.allocator);
+    var func = Function.init(Linkage.public(), "main", &.{}, null, std.testing.allocator);
     defer func.deinit();
     var block = try func.addBlock("start");
     try block.addInstr(.{ .ret = null });
@@ -928,16 +923,16 @@ test "type def" {
 }
 
 test "type size" {
-    try testing.expectEqual(Type.size(.byte), 1);
-    try testing.expectEqual(Type.size(.signed_byte), 1);
-    try testing.expectEqual(Type.size(.unsigned_byte), 1);
-    try testing.expectEqual(Type.size(.halfword), 2);
-    try testing.expectEqual(Type.size(.signed_halfword), 2);
-    try testing.expectEqual(Type.size(.unsigned_halfword), 2);
-    try testing.expectEqual(Type.size(.word), 4);
-    try testing.expectEqual(Type.size(.single), 4);
-    try testing.expectEqual(Type.size(.long), 8);
-    try testing.expectEqual(Type.size(.double), 8);
+    try std.testing.expectEqual(Type.size(.byte), 1);
+    try std.testing.expectEqual(Type.size(.signed_byte), 1);
+    try std.testing.expectEqual(Type.size(.unsigned_byte), 1);
+    try std.testing.expectEqual(Type.size(.halfword), 2);
+    try std.testing.expectEqual(Type.size(.signed_halfword), 2);
+    try std.testing.expectEqual(Type.size(.unsigned_halfword), 2);
+    try std.testing.expectEqual(Type.size(.word), 4);
+    try std.testing.expectEqual(Type.size(.single), 4);
+    try std.testing.expectEqual(Type.size(.long), 8);
+    try std.testing.expectEqual(Type.size(.double), 8);
 
     const type_def = TypeDef.init("person", null, &.{
         .{ .ty = .long, .repeat = 1 },
@@ -945,7 +940,7 @@ test "type size" {
         .{ .ty = .byte, .repeat = 1 },
     });
     const aggregate: Type = .{ .aggregate = &type_def };
-    try testing.expectEqual(aggregate.size(), 24);
+    try std.testing.expectEqual(aggregate.size(), 24);
 }
 
 test "type size nested aggregate" {
@@ -953,7 +948,7 @@ test "type size nested aggregate" {
         .{ .ty = .long, .repeat = 2 },
     });
     const inner_aggregate: Type = .{ .aggregate = &inner };
-    try testing.expectEqual(inner_aggregate.size(), 16);
+    try std.testing.expectEqual(inner_aggregate.size(), 16);
 
     const type_def = TypeDef.init("person", null, &.{
         .{ .ty = .long, .repeat = 1 },
@@ -962,13 +957,13 @@ test "type size nested aggregate" {
         .{ .ty = .{ .aggregate = &inner }, .repeat = 1 },
     });
     const aggregate: Type = .{ .aggregate = &type_def };
-    try testing.expectEqual(aggregate.size(), 40);
+    try std.testing.expectEqual(aggregate.size(), 40);
 }
 
 test "type into abi" {
     const unchanged = struct {
         fn func(ty: Type) !void {
-            try testing.expectEqual(ty.intoAbi(), ty);
+            try std.testing.expectEqual(ty.intoAbi(), ty);
         }
     }.func;
 
@@ -979,18 +974,18 @@ test "type into abi" {
     const type_def = TypeDef.init("foo", null, &.{});
     try unchanged(.{ .aggregate = &type_def });
 
-    try testing.expectEqual(Type.intoAbi(.byte), Type.word);
-    try testing.expectEqual(Type.intoAbi(.unsigned_byte), Type.word);
-    try testing.expectEqual(Type.intoAbi(.signed_byte), Type.word);
-    try testing.expectEqual(Type.intoAbi(.halfword), Type.word);
-    try testing.expectEqual(Type.intoAbi(.unsigned_halfword), Type.word);
-    try testing.expectEqual(Type.intoAbi(.signed_halfword), Type.word);
+    try std.testing.expectEqual(Type.intoAbi(.byte), Type.word);
+    try std.testing.expectEqual(Type.intoAbi(.unsigned_byte), Type.word);
+    try std.testing.expectEqual(Type.intoAbi(.signed_byte), Type.word);
+    try std.testing.expectEqual(Type.intoAbi(.halfword), Type.word);
+    try std.testing.expectEqual(Type.intoAbi(.unsigned_halfword), Type.word);
+    try std.testing.expectEqual(Type.intoAbi(.signed_halfword), Type.word);
 }
 
 test "type into base" {
     const unchanged = struct {
         fn func(ty: Type) !void {
-            try testing.expectEqual(ty.intoBase(), ty);
+            try std.testing.expectEqual(ty.intoBase(), ty);
         }
     }.func;
 
@@ -999,25 +994,25 @@ test "type into base" {
     try unchanged(.single);
     try unchanged(.double);
 
-    try testing.expectEqual(Type.intoBase(.byte), Type.word);
-    try testing.expectEqual(Type.intoBase(.unsigned_byte), Type.word);
-    try testing.expectEqual(Type.intoBase(.signed_halfword), Type.word);
-    try testing.expectEqual(Type.intoBase(.halfword), Type.word);
-    try testing.expectEqual(Type.intoBase(.unsigned_halfword), Type.word);
-    try testing.expectEqual(Type.intoBase(.signed_halfword), Type.word);
+    try std.testing.expectEqual(Type.intoBase(.byte), Type.word);
+    try std.testing.expectEqual(Type.intoBase(.unsigned_byte), Type.word);
+    try std.testing.expectEqual(Type.intoBase(.signed_halfword), Type.word);
+    try std.testing.expectEqual(Type.intoBase(.halfword), Type.word);
+    try std.testing.expectEqual(Type.intoBase(.unsigned_halfword), Type.word);
+    try std.testing.expectEqual(Type.intoBase(.signed_halfword), Type.word);
     const type_def = TypeDef.init("foo", null, &.{});
-    try testing.expectEqual(Type.intoBase(.{ .aggregate = &type_def }), Type.long);
+    try std.testing.expectEqual(Type.intoBase(.{ .aggregate = &type_def }), Type.long);
 }
 
 test "add function to module" {
-    var module = Module.init(testing.allocator);
+    var module = Module.init(std.testing.allocator);
     defer module.deinit();
 
-    const function = Function.init(Linkage.private(), "foo", &.{}, null, testing.allocator);
+    const function = Function.init(Linkage.private(), "foo", &.{}, null, std.testing.allocator);
 
     _ = try module.addFunction(function);
 
-    try testing.expectEqual(module.functions.items[0], function);
+    try std.testing.expectEqual(module.functions.items[0], function);
 }
 
 test "variadic call" {
@@ -1033,13 +1028,13 @@ test "variadic call" {
 }
 
 test "module fmt order" {
-    var module = Module.init(testing.allocator);
+    var module = Module.init(std.testing.allocator);
     defer module.deinit();
 
     const type_def = TypeDef.init("test_type", null, &.{});
     _ = try module.addType(type_def);
 
-    var func = Function.init(Linkage.public(), "test_func", &.{}, null, testing.allocator);
+    var func = Function.init(Linkage.public(), "test_func", &.{}, null, std.testing.allocator);
 
     var block = try func.addBlock("entry");
     try block.addInstr(.{ .ret = null });
@@ -1051,8 +1046,8 @@ test "module fmt order" {
     });
     _ = try module.addData(data);
 
-    const formatted = try std.fmt.allocPrint(testing.allocator, "{f}", .{module});
-    defer testing.allocator.free(formatted);
+    const formatted = try std.fmt.allocPrint(std.testing.allocator, "{f}", .{module});
+    defer std.testing.allocator.free(formatted);
 
     const type_pos = std.mem.indexOf(u8, formatted, ":test_type") orelse {
         @panic("Type definition not found");
@@ -1066,8 +1061,8 @@ test "module fmt order" {
         @panic("Data definition not found");
     };
 
-    try testing.expect(type_pos < func_pos);
-    try testing.expect(func_pos < data_pos);
+    try std.testing.expect(type_pos < func_pos);
+    try std.testing.expect(func_pos < data_pos);
 }
 
 test "comparison types" {
@@ -1366,7 +1361,7 @@ test "zero initialized data" {
 }
 
 test "complex block with multiple instructions" {
-    var block = Block.init("test_block", testing.allocator);
+    var block = Block.init("test_block", std.testing.allocator);
     defer block.deinit();
 
     try block.assignInstr(
