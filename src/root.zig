@@ -41,9 +41,10 @@ pub const handle = struct {
     ///
     /// A value knows where it came from. Temporaries carry the block that defined
     /// them, parameters carry their function, globals carry their global handle and
-    /// integer literals carry their own type. This lets the builder validate that
-    /// an operand belongs to the function currently being emitted into, and that
-    /// literal types line up with the instruction that consumes them.
+    /// integer and floating point literals carry their own type. This lets the
+    /// builder validate that an operand belongs to the function currently being
+    /// emitted into, and that literal types line up with the instruction that
+    /// consumes them.
     pub const Value = union(enum) {
         /// Result of an instruction, defined in `block`
         temp: struct {
@@ -62,6 +63,8 @@ pub const handle = struct {
             ty: ir.Type,
             val: u64,
         },
+        /// Floating point literal, carrying its own type (single/double)
+        float: ir.Float,
     };
 };
 
@@ -453,6 +456,18 @@ pub const Builder = struct {
             else => return self.die_(error.InvalidType, "integer constant must be word or long, got {f}", .{ty}),
         }
         return .{ .int = .{ .ty = base, .val = val } };
+    }
+
+    /// Builds a single precision floating point literal (`s_<value>`).
+    pub fn createFloat(self: *Builder, val: f32) handle.Value {
+        _ = self;
+        return .{ .float = .{ .single = val } };
+    }
+
+    /// Builds a double precision floating point literal (`d_<value>`).
+    pub fn createDouble(self: *Builder, val: f64) handle.Value {
+        _ = self;
+        return .{ .float = .{ .double = val } };
     }
 
     /// Wraps a global definition as an address-like value.
@@ -1001,7 +1016,7 @@ pub const Builder = struct {
             .param => |p| if (p.func != cur.func) {
                 return self.die_(error.FunctionMismatch, "value belongs to a different function", .{});
             },
-            .global, .int => {},
+            .global, .int, .float => {},
         }
     }
 
@@ -1136,6 +1151,7 @@ pub const Builder = struct {
                 return .{ .global = self.globals.items[idx].name };
             },
             .int => |i| return .{ .@"const" = i.val },
+            .float => |f| return .{ .float = f },
         }
     }
 
@@ -1158,6 +1174,10 @@ pub const Builder = struct {
             },
             .global => return .long,
             .int => |i| return i.ty,
+            .float => |f| return switch (f) {
+                .single => .single,
+                .double => .double,
+            },
         }
     }
 
@@ -1272,6 +1292,93 @@ test "builder: global strings are deduplicated" {
             "data $.Lstr.1 = { b \"world\", b 0 }\n",
         text,
     );
+    try std.testing.expectEqual(@as(?[]const u8, null), builder.lastError());
+}
+
+test "builder: float constants" {
+    const gpa = std.testing.allocator;
+    var builder = Builder.init(gpa);
+    defer builder.deinit();
+
+    const calc = try builder.createFunction(.public(), "calc", &.{}, .single);
+    _ = try builder.createBlock(calc, "entry");
+
+    const sum = try builder.add(builder.createFloat(1.5), builder.createFloat(2.5));
+    try builder.ret(sum);
+
+    const text = try builder.toText(gpa);
+    defer gpa.free(text);
+
+    try std.testing.expectEqualStrings(
+        "export function s $calc() {\n" ++
+            "@entry\n" ++
+            "\t%t0 =s add s_1.5e0, s_2.5e0\n" ++
+            "\tret %t0\n" ++
+            "}\n",
+        text,
+    );
+    try std.testing.expectEqual(@as(?[]const u8, null), builder.lastError());
+}
+
+test "builder: double constants compile through the embedded backend" {
+    const gpa = std.testing.allocator;
+    var builder = Builder.init(gpa);
+    defer builder.deinit();
+
+    const half = try builder.createFunction(.public(), "half", &.{}, .double);
+    _ = try builder.createBlock(half, "entry");
+
+    const quotient = try builder.div(builder.createDouble(1.0), builder.createDouble(3.0));
+    try builder.ret(quotient);
+
+    const asm_text = try builder.compile(gpa, .amd64_sysv);
+    defer gpa.free(asm_text);
+
+    try std.testing.expect(std.mem.indexOf(u8, asm_text, ".globl half") != null);
+    try std.testing.expectEqual(@as(?[]const u8, null), builder.lastError());
+}
+
+test "builder: float constant edge cases compile through the embedded backend" {
+    const gpa = std.testing.allocator;
+    var builder = Builder.init(gpa);
+    defer builder.deinit();
+
+    const singles = .{
+        .{ "s_zero", @as(f32, 0.0) },
+        .{ "s_neg_zero", @as(f32, -0.0) },
+        .{ "s_denorm", @as(f32, 1.0e-45) },
+        .{ "s_big", std.math.floatMax(f32) },
+        .{ "s_inf", std.math.inf(f32) },
+        .{ "s_neg_inf", -std.math.inf(f32) },
+        .{ "s_nan", std.math.nan(f32) },
+    };
+    inline for (singles) |case| {
+        const f = try builder.createFunction(.public(), case[0], &.{}, .single);
+        _ = try builder.createBlock(f, "entry");
+        try builder.ret(builder.createFloat(case[1]));
+    }
+
+    const doubles = .{
+        .{ "d_denorm", @as(f64, 5.0e-324) },
+        .{ "d_big", std.math.floatMax(f64) },
+        .{ "d_inf", std.math.inf(f64) },
+        .{ "d_nan", std.math.nan(f64) },
+    };
+    inline for (doubles) |case| {
+        const f = try builder.createFunction(.public(), case[0], &.{}, .double);
+        _ = try builder.createBlock(f, "entry");
+        try builder.ret(builder.createDouble(case[1]));
+    }
+
+    const asm_text = try builder.compile(gpa, .amd64_sysv);
+    defer gpa.free(asm_text);
+
+    inline for (singles) |case| {
+        try std.testing.expect(std.mem.indexOf(u8, asm_text, ".globl " ++ case[0]) != null);
+    }
+    inline for (doubles) |case| {
+        try std.testing.expect(std.mem.indexOf(u8, asm_text, ".globl " ++ case[0]) != null);
+    }
     try std.testing.expectEqual(@as(?[]const u8, null), builder.lastError());
 }
 
