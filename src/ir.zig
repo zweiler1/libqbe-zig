@@ -876,23 +876,23 @@ test "qbe value" {
 }
 
 test "block" {
-    var blk1 = Block.init("start", std.testing.allocator);
-    defer blk1.deinit();
-    try blk1.addInstr(.{ .ret = null });
+    var blk1 = Block.init("start");
+    defer blk1.deinit(std.testing.allocator);
+    try blk1.addInstr(std.testing.allocator, .{ .ret = null });
     try testFmtEquals(Block, blk1, "@start\n\tret\n");
 
-    var blk2 = Block.init("start", std.testing.allocator);
-    defer blk2.deinit();
-    try blk2.addComment("Comment");
-    try blk2.assignInstr(.{ .temporary = "foo" }, .word, .{ .add = .{ .lhs = .{ .@"const" = 2 }, .rhs = .{ .@"const" = 2 } } });
-    try blk2.addInstr(.{ .ret = .{ .temporary = "foo" } });
+    var blk2 = Block.init("start");
+    defer blk2.deinit(std.testing.allocator);
+    try blk2.addComment(std.testing.allocator, "Comment");
+    try blk2.assignInstr(std.testing.allocator, .{ .temporary = "foo" }, .word, .{ .add = .{ .lhs = .{ .@"const" = 2 }, .rhs = .{ .@"const" = 2 } } });
+    try blk2.addInstr(std.testing.allocator, .{ .ret = .{ .temporary = "foo" } });
     try testFmtEquals(Block, blk2, "@start\n\t# Comment\n\t%foo =w add 2, 2\n\tret %foo\n");
 }
 
 test "instr blit" {
-    var blk = Block.init("start", std.testing.allocator);
-    defer blk.deinit();
-    try blk.addInstr(.{ .blit = .{ .src = .{ .temporary = "src" }, .dest = .{ .temporary = "dest" }, .n = 4 } });
+    var blk = Block.init("start");
+    defer blk.deinit(std.testing.allocator);
+    try blk.addInstr(std.testing.allocator, .{ .blit = .{ .src = .{ .temporary = "src" }, .dest = .{ .temporary = "dest" }, .n = 4 } });
     try testFmtEquals(Block, blk, "@start\n\tblit %src, %dest, 4\n");
 }
 
@@ -900,7 +900,7 @@ test "function" {
     var func = Function.init(Linkage.public(), "main", &.{}, null, std.testing.allocator);
     defer func.deinit();
     var block = try func.addBlock("start");
-    try block.addInstr(.{ .ret = null });
+    try block.addInstr(std.testing.allocator, .{ .ret = null });
     try testFmtEquals(Function, func, "export function $main() {\n@start\n\tret\n}");
 }
 
@@ -1005,12 +1005,12 @@ test "type into base" {
 }
 
 test "add function to module" {
-    var module = Module.init(std.testing.allocator);
-    defer module.deinit();
+    var module: Module = .empty;
+    defer module.deinit(std.testing.allocator);
 
     const function = Function.init(Linkage.private(), "foo", &.{}, null, std.testing.allocator);
 
-    _ = try module.addFunction(function);
+    _ = try module.addFunction(std.testing.allocator, function);
 
     try std.testing.expectEqual(module.functions.items[0], function);
 }
@@ -1028,23 +1028,23 @@ test "variadic call" {
 }
 
 test "module fmt order" {
-    var module = Module.init(std.testing.allocator);
-    defer module.deinit();
+    var module: Module = .empty;
+    defer module.deinit(std.testing.allocator);
 
     const type_def = TypeDef.init("test_type", null, &.{});
-    _ = try module.addType(type_def);
+    _ = try module.addType(std.testing.allocator, type_def);
 
     var func = Function.init(Linkage.public(), "test_func", &.{}, null, std.testing.allocator);
 
     var block = try func.addBlock("entry");
-    try block.addInstr(.{ .ret = null });
+    try block.addInstr(std.testing.allocator, .{ .ret = null });
 
-    _ = try module.addFunction(func);
+    _ = try module.addFunction(std.testing.allocator, func);
 
     const data = DataDef.init(Linkage.private(), "test_data", null, &.{
         .{ .ty = .word, .item = .{ .@"const" = 42 } },
     });
-    _ = try module.addData(data);
+    _ = try module.addData(std.testing.allocator, data);
 
     const formatted = try std.fmt.allocPrint(std.testing.allocator, "{f}", .{module});
     defer std.testing.allocator.free(formatted);
@@ -1361,28 +1361,33 @@ test "zero initialized data" {
 }
 
 test "complex block with multiple instructions" {
-    var block = Block.init("test_block", std.testing.allocator);
-    defer block.deinit();
+    const allocator = std.testing.allocator;
+    var block = Block.init("test_block");
+    defer block.deinit(allocator);
 
     try block.assignInstr(
+        allocator,
         .{ .temporary = "udiv_result" },
         .word,
         .{ .udiv = .{ .lhs = .{ .temporary = "a" }, .rhs = .{ .temporary = "b" } } },
     );
 
     try block.assignInstr(
+        allocator,
         .{ .temporary = "shift_result" },
         .word,
         .{ .shl = .{ .lhs = .{ .temporary = "a" }, .rhs = .{ .temporary = "b" } } },
     );
 
     try block.assignInstr(
+        allocator,
         .{ .temporary = "cast_result" },
         .single,
         .{ .cast = .{ .temporary = "shift_result" } },
     );
 
     try block.assignInstr(
+        allocator,
         .{ .temporary = "cmp_result" },
         .word,
         .{ .cmp = .{
@@ -1393,7 +1398,7 @@ test "complex block with multiple instructions" {
         } },
     );
 
-    try block.addInstr(.hlt);
+    try block.addInstr(allocator, .hlt);
 
     try testFmtEquals(Block, block, "@test_block\n\t%udiv_result =w udiv %a, %b\n\t%shift_result =w shl %a, %b\n\t%cast_result =s cast %shift_result\n\t%cmp_result =w cuos %cast_result, %x\n\thlt\n");
 }
