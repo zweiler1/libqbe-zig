@@ -6,6 +6,7 @@
 //! This file has mostly been kept unchanged except for these parts:
 //! - The allocator system was rewritten in a few places because of the new ArrayList implementation of Zig 0.16
 //! - The `Float` tagged union was added to abstract QBEs floating point values
+//! - The `SymbolRef` struct was added to enable the definition of extern values, like `extern $stderr`
 //!
 //! For licensing information, look at the LICENSE-qbe-zig file
 
@@ -398,12 +399,39 @@ pub const Float = union(enum) {
     }
 };
 
+/// QBE `$`-symbol reference used as a value
+///
+/// QBE allows a reference to be qualified: `extern` loads the address through the GOT, which is required for PIC/PIE code
+pub const SymbolRef = struct {
+    name: []const u8,
+    /// Qualifier rendered in front of the symbol name.
+    visibility: Visibility = .internal,
+
+    pub const Visibility = enum {
+        /// Plain `$name`, i.e. a symbol defined in this module
+        internal,
+        /// `extern $name`; the address is resolved through the GOT (PIC/PIE safe)
+        @"extern",
+    };
+
+    pub fn format(
+        self: @This(),
+        writer: *std.Io.Writer,
+    ) std.Io.Writer.Error!void {
+        switch (self.visibility) {
+            .internal => {},
+            .@"extern" => try writer.writeAll("extern "),
+        }
+        try writer.print("${s}", .{self.name});
+    }
+};
+
 /// QBE value that is accepted by instructions
 pub const Value = union(enum) {
     /// `%`-temporary
     temporary: []const u8,
-    /// `$`-global
-    global: []const u8,
+    /// `$`-symbol reference
+    global: SymbolRef,
     /// Integer constant
     @"const": u64,
     /// Floating point constant
@@ -415,7 +443,7 @@ pub const Value = union(enum) {
     ) std.Io.Writer.Error!void {
         switch (self) {
             .temporary => |name| try writer.print("%{s}", .{name}),
-            .global => |name| try writer.print("${s}", .{name}),
+            .global => |sym| try writer.print("{f}", .{sym}),
             .@"const" => |val| try writer.print("{d}", .{val}),
             .float => |val| try writer.print("{f}", .{val}),
         }
@@ -894,10 +922,11 @@ fn testFmtEquals(T: type, value: T, expected: []const u8) !void {
 
 test "qbe value" {
     try testFmtEquals(Value, .{ .temporary = "temp42" }, "%temp42");
-    try testFmtEquals(Value, .{ .global = "main" }, "$main");
+    try testFmtEquals(Value, .{ .global = .{ .name = "main" } }, "$main");
     try testFmtEquals(Value, .{ .@"const" = 1337 }, "1337");
     try testFmtEquals(Value, .{ .float = .{ .single = 1.5 } }, "s_1.5e0");
     try testFmtEquals(Value, .{ .float = .{ .double = -2.25 } }, "d_-2.25e0");
+    try testFmtEquals(Value, .{ .global = .{ .name = "stderr", .visibility = .@"extern" } }, "extern $stderr");
 }
 
 test "block" {
@@ -1044,7 +1073,7 @@ test "variadic call" {
     const instr = Instr{ .call = .{
         .name = "printf",
         .args = &.{
-            .{ .ty = .long, .val = .{ .global = "fmt" } },
+            .{ .ty = .long, .val = .{ .global = .{ .name = "fmt" } } },
             .{ .ty = .word, .val = .{ .@"const" = 0 } },
         },
         .variadic_i = 1,
@@ -1341,7 +1370,7 @@ test "phi instruction" {
             .label1 = "start",
             .val1 = .{ .temporary = "1" },
             .label2 = "loop",
-            .val2 = .{ .global = "tmp" },
+            .val2 = .{ .global = .{ .name = "tmp" } },
         } },
     } };
     try testFmtEquals(Statement, phi2, "%result =w phi @start %1, @loop $tmp");

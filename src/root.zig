@@ -40,11 +40,11 @@ pub const handle = struct {
     /// Handle referring to a value that can be used as an operand.
     ///
     /// A value knows where it came from. Temporaries carry the block that defined
-    /// them, parameters carry their function, globals carry their global handle and
-    /// integer and floating point literals carry their own type. This lets the
-    /// builder validate that an operand belongs to the function currently being
-    /// emitted into, and that literal types line up with the instruction that
-    /// consumes them.
+    /// them, parameters carry their function, globals carry their symbol reference
+    /// (name plus `ir.SymbolRef.Visibility`) and integer and floating point
+    /// literals carry their own type. This lets the builder validate that an
+    /// operand belongs to the function currently being emitted into, and that
+    /// literal types line up with the instruction that consumes them.
     pub const Value = union(enum) {
         /// Result of an instruction, defined in `block`
         temp: struct {
@@ -56,8 +56,8 @@ pub const handle = struct {
             func: Function,
             index: usize,
         },
-        /// `$symbol` (address-like, always `.long`)
-        global: Global,
+        /// `$symbol` reference (address-like, always `.long`)
+        global: ir.SymbolRef,
         /// Integer literal, carrying its own type for validation
         int: struct {
             ty: ir.Type,
@@ -475,7 +475,15 @@ pub const Builder = struct {
         if (@intFromEnum(global) >= self.globals.items.len) {
             return self.die_(error.UnknownHandle, "unknown global handle", .{});
         }
-        return .{ .global = global };
+        return .{ .global = .{ .name = self.globals.items[@intFromEnum(global)].name } };
+    }
+
+    /// Refers to a symbol defined outside this module, such as libc's `stderr`.
+    ///
+    /// Emitted as an `extern $<name>` address-like value (always `.long`), which
+    /// QBE lowers to a GOT-based address load so the reference is PIC/PIE safe.
+    pub fn externSymbol(self: *Builder, name: []const u8) Error!handle.Value {
+        return .{ .global = .{ .name = try self.intern(name), .visibility = .@"extern" } };
     }
 
     /// Returns a handle for parameter `index` of `func`.
@@ -1143,13 +1151,7 @@ pub const Builder = struct {
                 }
                 return f.arguments[p.index].val;
             },
-            .global => |g| {
-                const idx = @intFromEnum(g);
-                if (idx >= self.globals.items.len) {
-                    return self.die_(error.UnknownHandle, "unknown global handle", .{});
-                }
-                return .{ .global = self.globals.items[idx].name };
-            },
+            .global => |sym| return .{ .global = sym },
             .int => |i| return .{ .@"const" = i.val },
             .float => |f| return .{ .float = f },
         }
@@ -1379,6 +1381,64 @@ test "builder: float constant edge cases compile through the embedded backend" {
     inline for (doubles) |case| {
         try std.testing.expect(std.mem.indexOf(u8, asm_text, ".globl " ++ case[0]) != null);
     }
+    try std.testing.expectEqual(@as(?[]const u8, null), builder.lastError());
+}
+
+test "builder: external symbols" {
+    const gpa = std.testing.allocator;
+    var builder = Builder.init(gpa);
+    defer builder.deinit();
+
+    const main = try builder.createFunction(.public(), "main", &.{}, .word);
+    _ = try builder.createBlock(main, "start");
+
+    const fmt = try builder.createGlobalString(.private(), "value: %d");
+    const stderr = try builder.load(.long, try builder.externSymbol("stderr"));
+    _ = try builder.call("fprintf", null, &.{
+        .{ .ty = .long, .val = stderr },
+        .{ .ty = .long, .val = try builder.globalValue(fmt) },
+        .{ .ty = .word, .val = try builder.intConst(.word, 42) },
+    }, 2);
+    try builder.ret(try builder.intConst(.word, 0));
+
+    const text = try builder.toText(gpa);
+    defer gpa.free(text);
+
+    try std.testing.expectEqualStrings(
+        "export function w $main() {\n" ++
+            "@start\n" ++
+            "\t%t0 =l loadl extern $stderr\n" ++
+            "\tcall $fprintf(l %t0, l $.Lstr.0, ..., w 42)\n" ++
+            "\tret 0\n" ++
+            "}\n" ++
+            "data $.Lstr.0 = { b \"value: %d\", b 0 }\n",
+        text,
+    );
+    try std.testing.expectEqual(@as(?[]const u8, null), builder.lastError());
+}
+
+test "builder: external symbols compile through the embedded backend" {
+    const gpa = std.testing.allocator;
+    var builder = Builder.init(gpa);
+    defer builder.deinit();
+
+    const main = try builder.createFunction(.public(), "main", &.{}, .word);
+    _ = try builder.createBlock(main, "start");
+
+    const fmt = try builder.createGlobalString(.private(), "value: %d");
+    const stderr = try builder.load(.long, try builder.externSymbol("stderr"));
+    _ = try builder.call("fprintf", null, &.{
+        .{ .ty = .long, .val = stderr },
+        .{ .ty = .long, .val = try builder.globalValue(fmt) },
+        .{ .ty = .word, .val = try builder.intConst(.word, 42) },
+    }, 2);
+    try builder.ret(try builder.intConst(.word, 0));
+
+    const asm_text = try builder.compile(gpa, .amd64_sysv);
+    defer gpa.free(asm_text);
+
+    try std.testing.expect(std.mem.indexOf(u8, asm_text, "stderr@gotpcrel") != null);
+    try std.testing.expect(std.mem.indexOf(u8, asm_text, "callq fprintf") != null);
     try std.testing.expectEqual(@as(?[]const u8, null), builder.lastError());
 }
 
