@@ -3,8 +3,9 @@
 //!   - https://codeberg.org/ciathefed/qbe-zig/src/branch/main/src/tests.zig
 //! and updated to work with Zig 0.16.0
 //!
-//! Other than updating and rewriting related things to make them work with the new Zig version,
-//! this file is kept untouched in regards to the original, including all comments, structures, tests etc.
+//! This file has mostly been kept unchanged except for these parts:
+//! - The allocator system was rewritten in a few places because of the new ArrayList implementation of Zig 0.16
+//! - The `Float` tagged union was added to abstract QBEs floating point values
 //!
 //! For licensing information, look at the LICENSE-qbe-zig file
 
@@ -378,14 +379,35 @@ pub const Type = union(enum) {
     }
 };
 
+/// QBE floating point literal.
+///
+/// Floating point constants are self-typed in the QBE grammar: a single
+/// precision literal is written `s_1.5` and a double precision one `d_2.25`.
+pub const Float = union(enum) {
+    single: f32,
+    double: f64,
+
+    pub fn format(
+        self: @This(),
+        writer: *std.Io.Writer,
+    ) std.Io.Writer.Error!void {
+        switch (self) {
+            .single => |val| try writer.print("s_{e}", .{val}),
+            .double => |val| try writer.print("d_{e}", .{val}),
+        }
+    }
+};
+
 /// QBE value that is accepted by instructions
 pub const Value = union(enum) {
     /// `%`-temporary
     temporary: []const u8,
     /// `$`-global
     global: []const u8,
-    /// Constant
+    /// Integer constant
     @"const": u64,
+    /// Floating point constant
+    float: Float,
 
     pub fn format(
         self: @This(),
@@ -395,6 +417,7 @@ pub const Value = union(enum) {
             .temporary => |name| try writer.print("%{s}", .{name}),
             .global => |name| try writer.print("${s}", .{name}),
             .@"const" => |val| try writer.print("{d}", .{val}),
+            .float => |val| try writer.print("{f}", .{val}),
         }
     }
 };
@@ -873,6 +896,8 @@ test "qbe value" {
     try testFmtEquals(Value, .{ .temporary = "temp42" }, "%temp42");
     try testFmtEquals(Value, .{ .global = "main" }, "$main");
     try testFmtEquals(Value, .{ .@"const" = 1337 }, "1337");
+    try testFmtEquals(Value, .{ .float = .{ .single = 1.5 } }, "s_1.5e0");
+    try testFmtEquals(Value, .{ .float = .{ .double = -2.25 } }, "d_-2.25e0");
 }
 
 test "block" {
