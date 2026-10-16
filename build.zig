@@ -6,7 +6,7 @@ pub fn build(b: *std.Build) !void {
 
     const lib = b.addLibrary(.{
         .name = "qbe-zig",
-        .root_module = b.createModule(.{
+        .root_module = b.addModule("libqbe", .{
             .root_source_file = b.path("src/root.zig"),
             .target = target,
             .optimize = optimize,
