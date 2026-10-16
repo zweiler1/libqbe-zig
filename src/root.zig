@@ -149,6 +149,11 @@ pub const Builder = struct {
     /// Parallel to `module.functions`.
     funcs: std.ArrayList(FunctionInfo) = .empty,
     globals: std.ArrayList(GlobalInfo) = .empty,
+    /// Maps the contents of a string created via `createGlobalString` to the
+    /// global holding it, so identical strings share one definition.
+    string_globals: std.StringHashMapUnmanaged(handle.Global) = .empty,
+    /// Monotonic counter the auto generated string global names are derived from.
+    next_str: usize = 0,
     /// Aggregate types, kept as stable pointers and printed before the module.
     types: std.ArrayList(*ir.TypeDef) = .empty,
     /// String interner, so that identical names share one allocation.
@@ -168,6 +173,8 @@ pub const Builder = struct {
             .module = .empty,
             .funcs = .empty,
             .globals = .empty,
+            .string_globals = .empty,
+            .next_str = 0,
             .types = .empty,
             .interner = .empty,
             .cur_func = null,
@@ -184,6 +191,7 @@ pub const Builder = struct {
         for (self.funcs.items) |*info| info.deinit(self.allocator);
         self.funcs.deinit(self.allocator);
         self.globals.deinit(self.allocator);
+        self.string_globals.deinit(self.allocator);
         self.types.deinit(self.allocator);
         self.interner.deinit(self.allocator);
         self.module.deinit(self.allocator);
@@ -222,6 +230,30 @@ pub const Builder = struct {
         td.* = ir.TypeDef.init(tname, alignment, copied);
         try self.types.append(self.allocator, td);
         return .{ .aggregate = td };
+    }
+
+    /// Small helper to create a global string value. The symbol name is
+    /// generated automatically. Strings with identical contents share a single
+    /// global: the first definition (and the linkage it was created with) wins,
+    /// and later calls return a handle to that same global.
+    pub fn createGlobalString(self: *Builder, linkage: ir.Linkage, value: []const u8) Error!handle.Global {
+        const interned = try self.intern(value);
+        const gop = try self.string_globals.getOrPut(self.allocator, interned);
+        if (gop.found_existing) {
+            return gop.value_ptr.*;
+        }
+        gop.key_ptr.* = interned;
+        errdefer _ = self.string_globals.remove(interned);
+
+        const name = try std.fmt.allocPrint(self.arena.allocator(), ".Lstr.{d}", .{self.next_str});
+        self.next_str += 1;
+
+        const global = try self.createData(linkage, name, null, &.{
+            .{ .ty = .byte, .item = .{ .str = interned } },
+            .{ .ty = .byte, .item = .{ .@"const" = 0 } },
+        });
+        gop.value_ptr.* = global;
+        return global;
     }
 
     /// Defines a global data symbol and returns a handle usable as an address.
@@ -1200,6 +1232,44 @@ test "builder: hello world" {
             "\tret 0\n" ++
             "}\n" ++
             "data $str = { b \"hello world\", b 0 }\n",
+        text,
+    );
+    try std.testing.expectEqual(@as(?[]const u8, null), builder.lastError());
+}
+
+test "builder: global strings are deduplicated" {
+    const gpa = std.testing.allocator;
+    var builder = Builder.init(gpa);
+    defer builder.deinit();
+
+    const hello1 = try builder.createGlobalString(.private(), "hello");
+    const hello2 = try builder.createGlobalString(.private(), "hello");
+    const world = try builder.createGlobalString(.private(), "world");
+
+    try std.testing.expect(hello1 == hello2);
+    try std.testing.expect(hello1 != world);
+
+    const main = try builder.createFunction(.public(), "main", &.{}, .word);
+    _ = try builder.createBlock(main, "start");
+    _ = try builder.call(
+        "puts",
+        null,
+        &.{.{ .ty = .long, .val = try builder.globalValue(hello1) }},
+        null,
+    );
+    try builder.ret(try builder.intConst(.word, 0));
+
+    const text = try builder.toText(gpa);
+    defer gpa.free(text);
+
+    try std.testing.expectEqualStrings(
+        "export function w $main() {\n" ++
+            "@start\n" ++
+            "\tcall $puts(l $.Lstr.0)\n" ++
+            "\tret 0\n" ++
+            "}\n" ++
+            "data $.Lstr.0 = { b \"hello\", b 0 }\n" ++
+            "data $.Lstr.1 = { b \"world\", b 0 }\n",
         text,
     );
     try std.testing.expectEqual(@as(?[]const u8, null), builder.lastError());
