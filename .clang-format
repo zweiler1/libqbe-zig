@@ -1,0 +1,51 @@
+---
+# Default settings that apply to all languages
+IndentWidth: 4
+ColumnLimit: 100
+NamespaceIndentation: All
+IndentCaseLabels: true
+
+# Function-like formatting
+AlignAfterOpenBracket: DontAlign
+BinPackArguments: true
+BinPackParameters: true
+ExperimentalAutoDetectBinPacking: false
+AllowAllParametersOfDeclarationOnNextLine: false
+AllowAllArgumentsOnNextLine: false
+
+# Brace and parenthesis handling
+BreakBeforeBraces: Attach
+BraceWrapping:
+    AfterFunction: false
+    BeforeCatch: false
+    BeforeElse: false
+    IndentBraces: false
+
+# Alignment settings
+AlignOperands: DontAlign
+AlignConsecutiveAssignments: false
+AlignConsecutiveDeclarations: false
+AlignTrailingComments: true
+
+# Other formatting
+SpaceBeforeParens: ControlStatements
+SpacesInParentheses: false
+SpacesInSquareBrackets: false
+SpaceAfterCStyleCast: false
+SpaceBeforeAssignmentOperators: true
+SpacesInContainerLiterals: false
+Cpp11BracedListStyle: true
+
+# Indentation
+ContinuationIndentWidth: 4
+IndentWrappedFunctionNames: false
+
+# List formatting
+PackConstructorInitializers: Never
+BreakConstructorInitializers: AfterColon
+BreakBeforeConceptDeclarations: Always
+AlwaysBreakAfterReturnType: None
+AllowShortBlocksOnASingleLine: true
+AllowShortFunctionsOnASingleLine: Empty
+AlwaysBreakBeforeMultilineStrings: false
+BreakStringLiterals: false

@@ -2,3 +2,6 @@
 zig-out/
 zig-pkg/
 *.o
+
+output.s
+main
