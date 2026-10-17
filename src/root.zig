@@ -430,6 +430,13 @@ pub const Builder = struct {
         return (try self.funcPtr(func)).blocks.items.len;
     }
 
+    /// Reports whether `block` already ends in a terminator (`ret`, `jmp`, `jnz`
+    /// or `hlt`). Trailing comments are ignored, so the result matches whether
+    /// `emit` would refuse to append another instruction to `block`.
+    pub fn isBlockTerminated(self: *Builder, block: handle.Block) Error!bool {
+        return blockIsTerminated(try self.blockPtr(block));
+    }
+
     /// Returns the interned name of `global`.
     pub fn globalName(self: *Builder, global: handle.Global) Error![]const u8 {
         const idx = @intFromEnum(global);
@@ -1194,21 +1201,26 @@ pub const Builder = struct {
 
 /// Reports whether `block` already ends in a control flow instruction.
 ///
-/// This deliberately does not go through `ir.Block.jumps`, which inspects the
-/// wrong field on the `volatile` statement payload.
+/// Trailing comments are skipped, so a block whose last real statement is a
+/// terminator still counts as terminated even if a comment was appended after
+/// it. This deliberately does not go through `ir.Block.jumps`, which inspects
+/// the wrong field on the `volatile` statement payload and misses `hlt`.
 fn blockIsTerminated(block: *const ir.Block) bool {
-    if (block.items.items.len == 0) return false;
-    const last = block.items.items[block.items.items.len - 1];
-    return switch (last) {
-        .comment => false,
-        .statement => |stmt| switch (stmt) {
-            .assign => false,
-            .@"volatile" => |instr| switch (instr) {
-                .ret, .jmp, .jnz, .hlt => true,
-                else => false,
+    var i = block.items.items.len;
+    while (i > 0) {
+        i -= 1;
+        switch (block.items.items[i]) {
+            .comment => continue,
+            .statement => |stmt| return switch (stmt) {
+                .assign => false,
+                .@"volatile" => |instr| switch (instr) {
+                    .ret, .jmp, .jnz, .hlt => true,
+                    else => false,
+                },
             },
-        },
-    };
+        }
+    }
+    return false;
 }
 
 /// Structural equality for `ir.Type`. Unions are not directly comparable in
@@ -1594,6 +1606,36 @@ test "builder: rejects instructions after a terminator" {
     _ = try builder.createBlock(f, "entry");
     try builder.ret(null);
     try std.testing.expectError(error.BlockTerminated, builder.ret(null));
+}
+
+test "builder: reports block termination" {
+    const gpa = std.testing.allocator;
+    var builder = Builder.init(gpa);
+    defer builder.deinit();
+
+    const f = try builder.createFunction(.private(), "f", &.{}, .word);
+    const entry = try builder.createBlock(f, "entry");
+    const other = try builder.createBlock(f, "other");
+    try builder.setInsertPoint(entry);
+
+    // A fresh block and a block with only an assignment are not terminated.
+    try std.testing.expect(!try builder.isBlockTerminated(entry));
+    _ = try builder.add(try builder.intConst(.word, 1), try builder.intConst(.word, 2));
+    try std.testing.expect(!try builder.isBlockTerminated(entry));
+
+    try builder.ret(try builder.intConst(.word, 0));
+    try std.testing.expect(try builder.isBlockTerminated(entry));
+
+    // A trailing comment must not hide the terminator.
+    try builder.addComment("after the ret");
+    try std.testing.expect(try builder.isBlockTerminated(entry));
+    try std.testing.expectError(error.BlockTerminated, builder.ret(try builder.intConst(.word, 0)));
+
+    // `other` was never emitted into, so it is still open.
+    try std.testing.expect(!try builder.isBlockTerminated(other));
+
+    // Unknown handles are rejected.
+    try std.testing.expectError(error.UnknownHandle, builder.isBlockTerminated(.{ .func = f, .index = 99 }));
 }
 
 test "builder: rejects mismatched operand types" {
